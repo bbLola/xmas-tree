@@ -6,48 +6,47 @@
     <title>3D AI 圣诞粒子交互系统</title>
     <style>
         body { margin: 0; background-color: #000; overflow: hidden; font-family: sans-serif; }
-        #root { width: 100vw; height: 100vh; }
-        #loading-ui {
+        #root { width: 100vw; height: 100vh; position: relative; }
+        #loading {
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            color: #00ffcc; z-index: 100; text-align: center; pointer-events: none;
+            color: #00ffcc; z-index: 100; font-size: 14px; letter-spacing: 2px;
         }
-        .controls {
+        .ui-controls {
             position: absolute; bottom: 20px; left: 20px; z-index: 101;
-            background: rgba(0, 0, 0, 0.8); padding: 15px; border-radius: 15px;
-            border: 1px solid #00ffcc; color: white; backdrop-filter: blur(10px);
+            background: rgba(0, 0, 0, 0.7); padding: 15px; border-radius: 15px;
+            border: 1px solid #00ffcc; backdrop-filter: blur(10px); color: white;
         }
         button, label {
-            padding: 8px 15px; background: #00ffcc; border: none; border-radius: 5px;
-            cursor: pointer; font-weight: bold; margin-top: 10px; display: inline-block;
+            padding: 8px 15px; background: #00ffcc; border: none; border-radius: 8px;
+            cursor: pointer; font-weight: bold; font-size: 12px; margin: 5px 5px 0 0; display: inline-block;
         }
         #video-preview {
-            position: absolute; top: 20px; right: 20px; width: 120px; height: 90px;
-            border-radius: 10px; border: 2px solid #00ffcc; transform: scaleX(-1); z-index: 101;
+            position: absolute; top: 20px; right: 20px; width: 140px; height: 105px;
+            border-radius: 12px; border: 2px solid #00ffcc; transform: scaleX(-1);
+            background: #111; z-index: 101;
         }
     </style>
 </head>
 <body>
 
-<div id="loading-ui">正在加载 AI 引擎与 3D 资源...</div>
+<div id="loading">正在加载 AI 引擎...</div>
 <div id="root"></div>
 <video id="webcam" style="display:none" autoplay playsinline></video>
 <canvas id="video-preview"></canvas>
 
-<div class="controls">
-    <div style="font-weight: bold;">🎄 圣诞粒子系统</div>
-    <label for="img-upload">📂 插入照片/文档</label>
-    <input type="file" id="img-upload" multiple accept="image/*" style="display:none">
-    <button onclick="document.documentElement.requestFullscreen()">全屏控制</button>
-    <div style="font-size: 11px; color: #00ffcc; margin-top: 8px;">
+<div class="ui-controls">
+    <div style="font-size: 14px; margin-bottom: 8px; font-weight: bold;">🎄 圣诞粒子交互系统</div>
+    <label for="file-upload">📂 插入照片/文档</label>
+    <input type="file" id="file-upload" multiple accept="image/*" style="display:none">
+    <button onclick="document.documentElement.requestFullscreen()">全屏显示</button>
+    <div style="font-size: 11px; color: #00ffcc; margin-top: 5px;">
         🖐️ 张开: 扩散旋转 | ✊ 握拳: 聚合成树 | 👌 捏合: 抓取照片
     </div>
 </div>
 
-<!-- 加载 MediaPipe 手势识别 -->
+<!-- 引入 MediaPipe -->
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
-<!-- 加载 Babel 以解析 JSX -->
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
 <script type="importmap">
 {
@@ -55,115 +54,119 @@
     "react": "https://esm.sh/react@18.2.0",
     "react-dom": "https://esm.sh/react-dom@18.2.0",
     "three": "https://esm.sh/three@0.160.0",
+    "htm": "https://esm.sh/htm@3.1.1",
     "@react-three/fiber": "https://esm.sh/@react-three/fiber@8.15.11?external=three",
     "@react-three/drei": "https://esm.sh/@react-three/drei@9.92.7?external=three,react,react-dom"
   }
 }
 </script>
 
-<script type="text/babel" data-type="module">
+<script type="module">
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { createRoot } from 'react-dom';
 import * as THREE from 'three';
+import htm from 'htm';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls, Environment, Float, MeshReflectorMaterial, ContactShadows } from '@react-three/drei';
+import { OrbitControls, Environment, Float, MeshReflectorMaterial, PerspectiveCamera } from '@react-three/drei';
 
-// 全局手势状态（跨组件共享，确保响应无延迟）
-const handData = { gesture: 'open', pinch: false, scale: 1, pos: new THREE.Vector3() };
+const html = htm.bind(React.createElement);
 
-// --- 圣诞形状粒子组件 ---
-const XmasParticles = ({ textures }) => {
-    const count = 1500;
+// 全局手势状态单例
+const handState = { gesture: 'open', pinch: false, scale: 1 };
+
+// --- 核心粒子组件 ---
+const XmasEngine = ({ photoTextures }) => {
+    const count = 1800;
     const meshRef = useRef();
     const dummy = new THREE.Object3D();
-    const [activeTexture, setActiveTexture] = useState(null);
+    const [grabbedPhoto, setGrabbedPhoto] = useState(null);
 
-    // 形状定义：球、礼物盒、铃铛、树、圆柱
-    const geos = useMemo(() => [
+    // 定义不同形状的几何体
+    const geometries = useMemo(() => [
         new THREE.SphereGeometry(0.2, 8, 8),      // 圆球
-        new THREE.BoxGeometry(0.3, 0.3, 0.3),    // 礼物/正方体
-        new THREE.TorusGeometry(0.15, 0.05, 8, 12), // 铃铛/圆环
+        new THREE.BoxGeometry(0.3, 0.3, 0.3),    // 礼物盒
+        new THREE.TorusGeometry(0.15, 0.05, 8, 16), // 铃铛/圆环
         new THREE.ConeGeometry(0.2, 0.4, 4),     // 圣诞树/三角形
-        new THREE.CylinderGeometry(0.1, 0.1, 0.3) // 袜子/领带原型
+        new THREE.CylinderGeometry(0.1, 0.1, 0.3, 6) // 领带/圆柱
     ], []);
 
     const particles = useMemo(() => {
-        const data = [];
+        const pArr = [];
         for (let i = 0; i < count; i++) {
             const t = i / count;
             const angle = i * 137.5 * (Math.PI / 180);
             const r = (1 - t) * 10;
-            const treePos = new THREE.Vector3(
-                Math.cos(angle) * (r + Math.sin(t * 30) * 0.5),
-                t * 22 - 10,
-                Math.sin(angle) * (r + Math.sin(t * 30) * 0.5)
-            );
+            const wave = Math.sin(t * 30) * 0.5;
+            
+            // 圣诞树坐标 (费马螺旋)
+            const treePos = new THREE.Vector3(Math.cos(angle) * (r + wave), t * 24 - 10, Math.sin(angle) * (r + wave));
+            // 随机扩散坐标
             const randPos = new THREE.Vector3((Math.random()-0.5)*60, (Math.random()-0.5)*60, (Math.random()-0.5)*60);
-            data.push({ 
-                treePos, 
-                randPos, 
-                currPos: randPos.clone(), 
-                geoIdx: Math.floor(Math.random() * geos.length),
-                rotSpeed: Math.random() * 0.02,
-                size: 0.4 + Math.random() * 0.5
+            
+            pArr.push({
+                treePos,
+                randPos,
+                currPos: randPos.clone(),
+                geoIdx: Math.floor(Math.random() * geometries.length),
+                scale: 0.3 + Math.random() * 0.5
             });
         }
-        return data;
+        return pArr;
     }, []);
 
     useFrame((state) => {
         const time = state.clock.getElapsedTime();
-        const isFist = handData.gesture === 'fist';
+        const isFist = handState.gesture === 'fist';
 
         particles.forEach((p, i) => {
             let target = isFist ? p.treePos : p.randPos;
             
-            // 散开旋转动效
+            // 散开时的旋转动态
             if (!isFist) {
-                const s = Math.sin(time * 0.3), c = Math.cos(time * 0.3);
-                const x = target.x, z = target.z;
-                target.x = x * c - z * s;
-                target.z = x * s + z * c;
+                const rot = time * 0.3;
+                const ox = p.randPos.x;
+                const oz = p.randPos.z;
+                target = new THREE.Vector3(ox * Math.cos(rot) - oz * Math.sin(rot), p.randPos.y, ox * Math.sin(rot) + oz * Math.cos(rot));
             }
 
-            p.currPos.lerp(target, 0.07);
+            p.currPos.lerp(target, 0.06); // 丝滑过渡
             dummy.position.copy(p.currPos);
-            dummy.scale.setScalar(p.size * handData.scale);
-            dummy.rotation.set(time * p.rotSpeed * 10, time * p.rotSpeed * 5, 0);
+            dummy.scale.setScalar(p.scale * handState.scale);
+            dummy.rotation.set(time * 0.5, time * 0.3, 0);
             dummy.updateMatrix();
             meshRef.current.setMatrixAt(i, dummy.matrix);
         });
         meshRef.current.instanceMatrix.needsUpdate = true;
 
-        // 捏合抓取照片逻辑
-        if (handData.pinch && textures.length > 0 && !activeTexture) {
-            setActiveTexture(textures[Math.floor(Math.random() * textures.length)]);
-        } else if (!handData.pinch) {
-            setActiveTexture(null);
+        // 捏合抓取逻辑
+        if (handState.pinch && photoTextures.length > 0 && !grabbedPhoto) {
+            setGrabbedPhoto(photoTextures[Math.floor(Math.random() * photoTextures.length)]);
+        } else if (!handState.pinch) {
+            setGrabbedPhoto(null);
         }
     });
 
-    return (
+    return html`
         <group>
-            <instancedMesh ref={meshRef} args={[geometries[0], null, count]}>
-                <sphereGeometry args={[0.2, 12, 12]} />
-                <meshStandardMaterial metalness={1} roughness={0.1} color="#00ffcc" envMapIntensity={2} />
+            <instancedMesh ref=${meshRef} args=${[geometries[0], null, count]}>
+                <meshStandardMaterial metalness=${1} roughness=${0.1} color="#00ffcc" envMapIntensity=${2} />
             </instancedMesh>
 
-            {activeTexture && (
-                <Float speed={5} rotationIntensity={2}>
-                    <mesh position={[0, 0, 12]}>
-                        <planeGeometry args={[8, 10]} />
-                        <meshBasicMaterial map={activeTexture} transparent opacity={0.9} />
-                        <pointLight intensity={150} color="#00ffcc" distance={25} />
+            ${grabbedPhoto && html`
+                <${Float} speed=${5} rotationIntensity=${2}>
+                    <mesh position=${[0, 2, 10]}>
+                        <planeGeometry args=${[8, 10]} />
+                        <meshBasicMaterial map=${grabbedPhoto} transparent opacity=${0.9} />
+                        <!-- 照片光晕 -->
+                        <pointLight intensity=${150} color="#00ffcc" distance=${25} />
                     </mesh>
-                </Float>
-            )}
+                <//>
+            `}
         </group>
-    );
+    `;
 };
 
-// --- 顶级场景 ---
+// --- 主应用组件 ---
 const App = () => {
     const [textures, setTextures] = useState([]);
 
@@ -171,23 +174,23 @@ const App = () => {
         const video = document.getElementById('webcam');
         const canvas = document.getElementById('video-preview');
         const ctx = canvas.getContext('2d');
-        const loading = document.getElementById('loading-ui');
+        const loading = document.getElementById('loading');
 
-        // 初始化 MediaPipe
-        const hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
         hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6 });
-        
         hands.onResults((res) => {
             loading.style.display = 'none';
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             ctx.drawImage(res.image, 0, 0, canvas.width, canvas.height);
-            
             if (res.multiHandLandmarks && res.multiHandLandmarks.length > 0) {
                 const lm = res.multiHandLandmarks[0];
                 const pinchDist = Math.hypot(lm[4].x - lm[8].x, lm[4].y - lm[8].y);
-                handData.pinch = pinchDist < 0.05;
-                handData.gesture = lm[12].y > lm[9].y ? 'fist' : 'open';
-                handData.scale = 0.5 + (lm[0].y - lm[12].y) * 2;
+                handState.pinch = pinchDist < 0.05;
+                handState.gesture = lm[12].y > lm[9].y ? 'fist' : 'open';
+                handState.scale = 0.5 + (lm[0].y - lm[12].y) * 2;
             }
         });
 
@@ -197,9 +200,9 @@ const App = () => {
         });
         cam.start();
 
-        // 插入照片逻辑
+        // 插入文件逻辑
         const texLoader = new THREE.TextureLoader();
-        document.getElementById('img-upload').onchange = (e) => {
+        document.getElementById('file-upload').onchange = (e) => {
             Array.from(e.target.files).forEach(f => {
                 const url = URL.createObjectURL(f);
                 texLoader.load(url, (t) => setTextures(prev => [...prev, t]));
@@ -207,40 +210,40 @@ const App = () => {
         };
     }, []);
 
-    return (
-        <Canvas shadows dpr={[1, 2]}>
-            <color attach="background" args={['#020202']} />
-            <fog attach="fog" args={['#000', 30, 95]} />
-            <ambientLight intensity={0.4} />
+    return html`
+        <${Canvas} shadows>
+            <${PerspectiveCamera} makeDefault position=${[0, 5, 40]} fov=${45} />
+            <color attach="background" args=${['#020202']} />
+            <fog attach="fog" args=${['#000', 30, 95]} />
+            <ambientLight intensity=${0.4} />
             
-            {/* 树顶明亮灯泡 */}
-            <mesh position={[0, 13, 0]}>
-                <sphereGeometry args={[0.5, 32, 32]} />
-                <meshStandardMaterial emissive="#ffd700" emissiveIntensity={12} color="white" />
-                <pointLight intensity={200} color="#ffd700" distance={40} />
+            <!-- 树顶灯泡 -->
+            <mesh position=${[0, 14, 0]}>
+                <sphereGeometry args=${[0.6, 32, 32]} />
+                <meshStandardMaterial emissive="#ffd700" emissiveIntensity=${12} color="white" />
+                <pointLight intensity=${180} color="#ffd700" distance=${40} />
             </mesh>
 
-            <XmasParticles textures={textures} />
-            
-            <Environment preset="city" />
-            
-            {/* 丝滑地面反射 */}
-            <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -12, 0]}>
-                <planeGeometry args={[100, 100]} />
-                <MeshReflectorMaterial
-                    blur={[300, 100]} resolution={1024} mixBlur={1} mixStrength={50}
-                    roughness={1} depthScale={1.2} minDepthThreshold={0.4} maxDepthThreshold={1.4}
-                    color="#080808" metalness={0.5}
+            <${XmasEngine} photoTextures=${textures} />
+            <${Environment} preset="city" />
+
+            <!-- 反射地面 -->
+            <mesh rotation=${[-Math.PI / 2, 0, 0]} position=${[0, -12, 0]}>
+                <planeGeometry args=${[100, 100]} />
+                <${MeshReflectorMaterial}
+                    blur=${[300, 100]} resolution=${1024} mixBlur=${1} mixStrength=${50}
+                    roughness=${1} color="#080808" metalness=${0.5}
                 />
             </mesh>
-            
-            <OrbitControls enablePan={false} makeDefault />
-        </Canvas>
-    );
+
+            <${OrbitControls} enablePan=${false} makeDefault />
+        <//>
+    `;
 };
 
-const root = createRoot(document.getElementById('root'));
-root.render(<App />);
+const container = document.getElementById('root');
+const root = createRoot(container);
+root.render(html`<${App} />`);
 </script>
 </body>
 </html>
