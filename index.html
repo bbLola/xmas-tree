@@ -3,62 +3,59 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI手势交互圣诞粒子系统</title>
+    <title>AI手势交互圣诞粒子系统 - 稳定版</title>
     <style>
-        body { margin: 0; background-color: #000; overflow: hidden; font-family: -apple-system, sans-serif; }
-        #root { width: 100vw; height: 100vh; }
+        body { margin: 0; background-color: #050505; overflow: hidden; font-family: sans-serif; }
+        #root { width: 100vw; height: 100vh; position: relative; z-index: 1; }
         
-        /* UI 样式 */
+        /* 状态提示 */
+        #status-overlay {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: white; z-index: 10; pointer-events: none; text-align: center;
+            font-size: 14px; letter-spacing: 1px; transition: opacity 0.5s;
+        }
+
         .controls {
             position: absolute; bottom: 20px; left: 20px; z-index: 100;
-            display: flex; flex-direction: column; gap: 10px;
             background: rgba(255, 255, 255, 0.1); padding: 15px;
             border-radius: 15px; backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.2);
         }
-        .controls h3 { color: white; margin: 0 0 10px 0; font-size: 14px; }
-        .btn-group { display: flex; gap: 10px; }
         button, label {
             padding: 8px 15px; background: white; border: none; border-radius: 8px;
-            cursor: pointer; font-weight: bold; font-size: 12px; transition: 0.3s;
+            cursor: pointer; font-weight: bold; font-size: 12px; margin-right: 5px;
         }
-        button:hover { background: #00ffcc; }
         #video-container {
             position: absolute; top: 20px; right: 20px; width: 160px; height: 120px;
             border-radius: 10px; overflow: hidden; border: 2px solid #00ffcc; transform: scaleX(-1);
+            background: #000; z-index: 100;
         }
         video { width: 100%; height: 100%; object-fit: cover; }
-        .hint {
-            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            color: rgba(255,255,255,0.5); pointer-events: none; text-align: center;
-        }
-        #fullscreen-btn { position: absolute; top: 20px; left: 20px; z-index: 101; }
     </style>
 </head>
 <body>
 
+<div id="status-overlay">正在准备 3D 引擎...</div>
+
 <div id="root"></div>
 
-<!-- 手势识别摄像头反馈 -->
 <div id="video-container">
     <video id="webcam" autoplay playsinline></video>
 </div>
 
-<div class="hint" id="loading-hint">正在初始化 AI 摄像头...</div>
-
-<!-- UI 界面 -->
 <div class="controls">
-    <h3>圣诞图片仓库</h3>
-    <div class="btn-group">
-        <label for="img-upload">添加照片/文档</label>
-        <input type="file" id="img-upload" multiple accept="image/*" style="display:none">
-        <button id="fullscreen-btn-el">全屏控制</button>
-    </div>
-    <div style="color: #00ffcc; font-size: 11px; margin-top: 5px;">
-        👌 捏合: 抓取 | ✊ 握拳: 聚合成树 | 🖐️ 张开: 散开旋转
+    <div style="color: white; margin-bottom: 10px; font-size: 14px; font-weight: bold;">圣诞粒子系统控制台</div>
+    <label for="img-upload">添加照片</label>
+    <input type="file" id="img-upload" multiple accept="image/*" style="display:none">
+    <button id="fs-btn">全屏模式</button>
+    <div style="color: #00ffcc; font-size: 11px; margin-top: 8px;">
+        🖐️ 张开: 旋转散开 | ✊ 握拳: 聚合成树 | 👌 捏合: 抓取照片
     </div>
 </div>
 
-<!-- 依赖库 Importmap -->
+<!-- 引入脚本 -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
 <script type="importmap">
 {
   "imports": {
@@ -71,233 +68,161 @@
 }
 </script>
 
-<!-- 引入 MediaPipe 手势库 -->
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-
 <script type="module">
-import React, { useState, useMemo, useRef, useEffect, Suspense } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { createRoot } from 'react-dom';
 import * as THREE from 'three';
-import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Environment, Float, Text, ContactShadows, MeshReflectorMaterial } from '@react-three/drei';
 
-// --- 全局手势状态 ---
+// 全局手势状态
 let handState = { gesture: 'open', x: 0, y: 0, pinch: false, scale: 1 };
 
-// --- 初始化 MediaPipe ---
-function initAI() {
-    const videoElement = document.getElementById('webcam');
-    const hands = new Hands({
-        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
-    });
-
-    hands.setOptions({
-        maxNumHands: 1,
-        modelComplexity: 1,
-        minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.5
-    });
-
-    hands.onResults((results) => {
-        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-            document.getElementById('loading-hint').style.display = 'none';
-            const lm = results.multiHandLandmarks[0];
-            
-            // 判定逻辑
-            const thumbTip = lm[4];
-            const indexTip = lm[8];
-            const middleTip = lm[12];
-            
-            // 1. 捏合判断 (拇指食指距离)
-            const distPinch = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y);
-            handState.pinch = distPinch < 0.05;
-
-            // 2. 握拳判断 (中指指尖是否低于指根)
-            const isFist = middleTip.y > lm[9].y;
-            handState.gesture = isFist ? 'fist' : 'open';
-
-            // 3. 坐标映射 (反转X)
-            handState.x = (0.5 - indexTip.x) * 40;
-            handState.y = (0.5 - indexTip.y) * 40;
-            
-            // 4. 缩放控制 (根据手部整体高度)
-            handState.scale = 1.0 + (lm[0].y - lm[12].y);
-        }
-    });
-
-    const camera = new Camera(videoElement, {
-        onFrame: async () => { await hands.send({ image: videoElement }); },
-        width: 640, height: 480
-    });
-    camera.start();
-}
-
-// --- 粒子与图片混合组件 ---
-const ParticleSystem = ({ images }) => {
-    const count = 1500;
-    const { viewport } = useThree();
+// --- 圣诞树粒子组件 ---
+const TreeParticles = ({ images }) => {
+    const count = 2000;
     const dummy = new THREE.Object3D();
     const [selectedImg, setSelectedImg] = useState(null);
 
-    // 生成粒子基础数据
     const particles = useMemo(() => {
         const temp = [];
         for (let i = 0; i < count; i++) {
             const t = i / count;
             const angle = i * 137.5 * (Math.PI / 180);
-            
-            // 树形目标坐标
             const r = (1 - t) * 10;
             const wave = Math.sin(t * 30) * 0.5;
             const treePos = new THREE.Vector3(Math.cos(angle) * (r + wave), t * 25 - 10, Math.sin(angle) * (r + wave));
-            
-            // 随机散开坐标
-            const randPos = new THREE.Vector3((Math.random() - 0.5) * 50, (Math.random() - 0.5) * 50, (Math.random() - 0.5) * 50);
-            
-            // 形状与颜色
-            const type = Math.floor(Math.random() * 5); // 0:球, 1:方块, 2:锥...
-            const color = new THREE.Color(['#ff0000', '#00ff00', '#ffd700', '#ffffff', '#00ffff'][type]);
-            
-            temp.push({ treePos, randPos, currPos: randPos.clone(), color, type, scale: 0.3 + Math.random() * 0.4 });
+            const randPos = new THREE.Vector3((Math.random() - 0.5) * 60, (Math.random() - 0.5) * 60, (Math.random() - 0.5) * 60);
+            temp.push({ treePos, randPos, currPos: randPos.clone(), scale: 0.2 + Math.random() * 0.3 });
         }
         return temp;
     }, []);
 
-    // 每一帧的逻辑更新
     const meshRef = useRef();
+
     useFrame((state) => {
         const time = state.clock.getElapsedTime();
         const isFist = handState.gesture === 'fist';
-        const isPinch = handState.pinch;
-
+        
         particles.forEach((p, i) => {
             let target = isFist ? p.treePos : p.randPos;
-            
-            // 旋转逻辑：如果是散开状态，缓慢旋转
             if (!isFist) {
-                const rotSpeed = 0.5;
-                const ox = p.randPos.x;
-                const oz = p.randPos.z;
-                target.x = ox * Math.cos(time * rotSpeed) - oz * Math.sin(time * rotSpeed);
-                target.z = ox * Math.sin(time * rotSpeed) + oz * Math.cos(time * rotSpeed);
+                // 散开时绕 Y 轴慢速旋转
+                const s = Math.sin(time * 0.2), c = Math.cos(time * 0.2);
+                const x = p.randPos.x, z = p.randPos.z;
+                target = new THREE.Vector3(x * c - z * s, p.randPos.y, x * s + z * c);
             }
-
             p.currPos.lerp(target, 0.05);
             dummy.position.copy(p.currPos);
             dummy.scale.setScalar(p.scale * handState.scale);
-            dummy.rotation.set(time * 0.5, time * 0.3, 0);
             dummy.updateMatrix();
             meshRef.current.setMatrixAt(i, dummy.matrix);
         });
         meshRef.current.instanceMatrix.needsUpdate = true;
 
-        // 捏合抓取判定 (非常简单的最近点算法)
-        if (isPinch && images.length > 0 && !selectedImg) {
+        // 捏合逻辑
+        if (handState.pinch && images.length > 0 && !selectedImg) {
             setSelectedImg(images[Math.floor(Math.random() * images.length)]);
-        } else if (!isPinch) {
+        } else if (!handState.pinch) {
             setSelectedImg(null);
         }
     });
 
     return (
         <group>
-            {/* 粒子主体：使用实例化网格提升性能 */}
             <instancedMesh ref={meshRef} args={[null, null, count]}>
                 <sphereGeometry args={[0.3, 8, 8]} />
-                <meshStandardMaterial roughness={0} metalness={1} envMapIntensity={2} />
+                <meshStandardMaterial roughness={0} metalness={1} color="#00ffcc" />
             </instancedMesh>
-
-            {/* 选中的照片弹出动效 */}
             {selectedImg && (
-                <Float speed={5} rotationIntensity={2} floatIntensity={2}>
+                <Float speed={5}>
                     <mesh position={[0, 0, 10]}>
                         <planeGeometry args={[8, 10]} />
-                        <meshBasicMaterial map={selectedImg.texture} transparent opacity={0.9} />
-                        {/* 照片光晕 */}
-                        <pointLight color="#00ffcc" intensity={50} distance={20} />
+                        <meshBasicMaterial map={selectedImg.texture} transparent />
+                        <pointLight color="white" intensity={100} distance={20} />
                     </mesh>
-                    <Text position={[0, -6, 10]} fontSize={0.5} color="white">
-                        {selectedImg.name}
-                    </Text>
                 </Float>
             )}
         </group>
     );
 };
 
-// --- 主应用场景 ---
+// --- 主应用 ---
 const App = () => {
     const [images, setImages] = useState([]);
-    
-    // 图片上传处理
-    useEffect(() => {
-        const loader = new THREE.TextureLoader();
-        const upload = document.getElementById('img-upload');
-        upload.addEventListener('change', (e) => {
-            Array.from(e.target.files).forEach(file => {
-                const url = URL.createObjectURL(file);
-                loader.load(url, (txt) => {
-                    setImages(prev => [...prev, { texture: txt, name: file.name }]);
-                });
-            });
-        });
 
-        // 全屏逻辑
-        document.getElementById('fullscreen-btn-el').onclick = () => {
+    useEffect(() => {
+        const overlay = document.getElementById('status-overlay');
+        
+        // 1. 初始化 AI (增加延迟确保依赖已加载)
+        setTimeout(() => {
+            if (typeof Hands === 'undefined') {
+                overlay.innerText = "库加载失败，请检查网络";
+                return;
+            }
+            
+            overlay.innerText = "请求摄像头权限...";
+            const hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
+            hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.5 });
+            
+            hands.onResults((results) => {
+                overlay.style.opacity = '0';
+                if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                    const lm = results.multiHandLandmarks[0];
+                    const distPinch = Math.hypot(lm[4].x - lm[8].x, lm[4].y - lm[8].y);
+                    handState.pinch = distPinch < 0.06;
+                    handState.gesture = lm[12].y > lm[9].y ? 'fist' : 'open';
+                    handState.scale = 1.0 + (lm[0].y - lm[12].y);
+                }
+            });
+
+            const camera = new Camera(document.getElementById('webcam'), {
+                onFrame: async () => { await hands.send({ image: document.getElementById('webcam') }); },
+                width: 640, height: 480
+            });
+            camera.start().catch(() => {
+                overlay.innerText = "无法打开摄像头，已开启鼠标模式";
+                setTimeout(() => overlay.style.opacity = '0', 3000);
+            });
+        }, 1500);
+
+        // 2. 图片上传
+        const loader = new THREE.TextureLoader();
+        document.getElementById('img-upload').onchange = (e) => {
+            Array.from(e.target.files).forEach(f => {
+                const url = URL.createObjectURL(f);
+                loader.load(url, (t) => setImages(prev => [...prev, { texture: t }]));
+            });
+        };
+
+        // 3. 全屏
+        document.getElementById('fs-btn').onclick = () => {
             if (!document.fullscreenElement) document.documentElement.requestFullscreen();
             else document.exitFullscreen();
         };
-
-        initAI();
     }, []);
 
     return (
         <Canvas shadows camera={{ position: [0, 5, 45], fov: 45 }}>
             <color attach="background" args={['#050505']} />
-            
-            {/* 环境光效 */}
-            <fog attach="fog" args={['#050505', 30, 100]} />
             <ambientLight intensity={0.5} />
-            <spotLight position={[0, 40, 0]} angle={0.5} penumbra={1} intensity={100} castShadow />
+            <pointLight position={[0, 15, 0]} color="#ffd700" intensity={150} />
             
-            {/* 树顶灯泡粒子 */}
-            <mesh position={[0, 15, 0]}>
-                <sphereGeometry args={[0.5, 32, 32]} />
-                <meshStandardMaterial color="#fff" emissive="#ffd700" emissiveIntensity={10} />
-                <pointLight intensity={100} color="#ffd700" />
-            </mesh>
-
-            <Suspense fallback={null}>
-                <ParticleSystem images={images} />
-                <Environment preset="city" />
-            </Suspense>
-
-            {/* 地面反射 */}
-            <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -12, 0]}>
+            <TreeParticles images={images} />
+            
+            <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -11, 0]}>
                 <planeGeometry args={[100, 100]} />
-                <MeshReflectorMaterial
-                    blur={[300, 100]}
-                    resolution={1024}
-                    mixBlur={1}
-                    mixStrength={60}
-                    roughness={1}
-                    depthScale={1.2}
-                    minDepthThreshold={0.4}
-                    maxDepthThreshold={1.4}
-                    color="#151515"
-                    metalness={0.5}
-                />
+                <MeshReflectorMaterial color="#111" blur={[300, 100]} mixBlur={1} mixStrength={40} roughness={1} />
             </mesh>
             
-            <OrbitControls makeDefault enablePan={false} maxPolarAngle={Math.PI / 2} />
+            <Environment preset="city" />
+            <OrbitControls enablePan={false} />
         </Canvas>
     );
 };
 
 const root = createRoot(document.getElementById('root'));
 root.render(<App />);
-
 </script>
 </body>
 </html>
